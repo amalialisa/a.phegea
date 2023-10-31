@@ -1,0 +1,316 @@
+---
+title: "moth"
+author: "Lisa Amalia"
+date: "2023-10-26"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#set working directory
+```{r}
+setwd("G:/My Drive/HUNGARY 2022/3rd SEMESTER/PROJECT EVALUATION AND REVIEW")
+```
+
+
+#A. ESTIMATING POPULATION SIZE AND SURVIVAL RATE
+
+#Load library
+```{r}
+library(marked)
+```
+
+# Load data
+```{r}
+moth<-read.csv("moth.eps1.csv")
+moth <- read.csv("moth.eps1.csv", colClasses = c(ch = "character"))
+head(moth)
+```
+
+#Process data
+```{r}
+moth$sex <- as.factor(moth$sex)
+moth.js.proc <- process.data(moth, 
+                               model = "JS", 
+                               groups = "sex")
+```
+#Make design data from processed data
+```{r}
+moth.js.ddl <- make.design.data(moth.js.proc)
+```
+
+#Fit the data
+```{r}
+fit.js.moth.models <- function(){
+  Phi.dot <- list(formula=~1)
+  Phi.time <- list(formula=~time)
+  p.dot <- list(formula=~1)
+  pent.time <- list(formula=~time)
+  pent.sex <- list(formula=~sex)
+  pent.dot <- list(formula=~1)
+  N.sex <- list(formula=~sex)
+  N.dot <- list(formula=~1)
+  cml <- create.model.list(c("Phi","p", "pent", "N"))
+  results <- crm.wrapper(cml, data = moth.js.proc, ddl = moth.js.ddl,
+                         external = FALSE, accumulate = FALSE, hessian = TRUE)
+  
+  return(results)
+}
+```
+
+#Run the function
+```{r}
+moth.js.models <- fit.js.dipper.models()
+moth.js.models
+```
+#Look at the estimated parameters using the top model from the previous code
+```{r}
+moth.js.models <- fit.js.moth.models()
+moth.js.models
+moth.js.models[[1]]
+```
+#The estimates above are not on probability scale (or in individuals for N)
+
+#Look at the prediction for (R E A L) values using top model
+```{r}
+moth.js.predicted <- predict(moth.js.models[[1]]) # [[1]] just calls the model row according to the model table.
+moth.js.predicted #run better from the console
+```
+#The output shows that:
+#survival between capture events is 0.75, 
+#detection probability is 0.67, 
+#pent is 0.22 each capture event, and 
+#the number of unmarked individuals in the superpopulation is about 11 
+#(so the super population is ~7 + 294 marked individuals =~ 301). 
+
+#counting the estimated population size
+#Abundance (N) is derived from the estimated parameters
+#We will estimate population size at each time by making a dataframe of estimates and calculating N
+#We will use the predicted estimates from the top-performing model (in this case: "moth.js.predicted")
+
+# NOTE: the below method will have to be adjusted based on your final model and the number of capture events
+```{r}
+N.derived <- data.frame(occ = c(1:4), #4 events
+                        Phi = c(rep(moth.js.predicted$Phi$estimate, 3), NA),   # 3 survival estimates all the same
+                        Nsuper = rep(moth.js.predicted$N$estimate + nrow(moth), 4), # Nsuper estimate + number of marked animals
+                        pent = c(1-sum(moth.js.predicted$pent$estimate), moth.js.predicted$pent$estimate)) # Sum of all pent must be 1
+```
+
+# Set-up empty vector for calculating N
+```{r}
+N.derived$N <- NA
+```
+
+# The inital population size (N[1]) = Nsuper * (1 - sum(all other pent estimates))
+# This is because of the link function for estimating pent.
+# The sum of all pent parameters MUST equal 1 (therefore, one less must be estimated)
+```{r}
+N.derived$N[1] <- (N.derived$Nsuper[1] * N.derived$pent[1])
+```
+
+# Subsequent population sizes are estimated by calculating surviving individuals (N[t-1] * Phi[t]), and
+# Adding new births (Nsuper * pent[t])
+```{r}
+for(i in 2:nrow(N.derived)){
+  N.derived$N[i] <- (N.derived$N[i-1]*N.derived$Phi[i-1]) + (N.derived$Nsuper[i] * N.derived$pent[i])
+}
+```
+
+# Look at what we did
+```{r}
+N.derived
+```
+#B.CHECKING THE CONFIDENCE LEVEL
+
+#Load the library
+```{r}
+detach("package:marked", unload=TRUE) # many of the function names are the same. unload `marked`
+library(RMark)
+```
+#Process Data. Use the same data but will just create the same top model (not all the other subsets)
+```{r}
+moth.rmark.processed <- RMark::process.data(dipper,
+                                              model = "POPAN")
+```
+
+# Formulae for model
+```{r}
+Phi.dot <- list(formula=~1)
+p.dot <- list(formula=~1)
+pent.dot <- list(formula=~1)
+N.dot <- list(formula=~1)
+```
+
+
+
+#Load additional library, make sure mark.exe installed on your computer. Fit the data. 
+```{r}
+library(RMark)
+library(TMB)
+moth.rmark <- mark(moth, model = "POPAN", 
+                     model.parameters = list(Phi = Phi.dot, p= p.dot, 
+                                                     pent = pent.dot, N = N.dot),
+                     realvcv = TRUE)
+```
+# The popan.derived function of RMark estimates N 
+# (plus estimates SE and 95% CI using the delta method)
+```{r}
+moth.derived.rmark <- popan.derived(moth.rmark.processed,
+                                      moth.rmark)$N
+moth.derived.rmark
+```
+
+#Plot the result
+```{r}
+library(ggplot2)
+
+#  first data frame
+data1 <- data.frame(
+  Occasion = 1:4,
+  N = c(118.7933, 163.6329, 199.1518, 227.2875),
+  SE = c(23.46395, 18.15735, 20.70510, 27.56353)
+)
+
+#  second data frame
+data2 <- data.frame(
+  occ = 1:4,
+  N = c(46.87479, 66.03763, 80.56617, 91.58117)
+)
+
+# Create the plot with points, lines, error bars, and customize the theme
+plot <- ggplot(data1, aes(x = Occasion, y = N)) +
+  geom_point(aes(color = "RMark")) +  # Add points for the first data frame
+  geom_line(aes(color = "RMark")) +   # Add lines for the first data frame
+  geom_errorbar(aes(ymin = N - SE, ymax = N + SE, color = "RMark"), width = 0.2) +  # Add error bars for the first data frame
+  geom_line(data = data2, aes(x = occ, y = N, color = "Hand")) +  # Add a line for the second data frame
+  geom_point(data = data2, aes(x = occ, y = N, color = "Hand")) +
+  labs(x = "Capture Event", y = "Estimated Population Size") +  # Label the axes
+  ggtitle("Estimated Population Size") +  # Add a title
+  scale_color_manual(values = c("RMark" = "red", "Hand" = "blue")) +  # Set legend colors
+  theme_grey() +  # Use a minimal theme (you can change this to another theme)
+  theme(
+    plot.title = element_text(size = 16, face = "bold"),  # Customize title text
+    axis.text = element_text(size = 12),  # Customize axis text
+    axis.title = element_text(size = 14),  # Customize axis title text
+    panel.grid.major = element_blank(),  # Remove major grid lines
+    panel.grid.minor = element_blank()  # Remove minor grid lines
+  )
+
+# Add a legend with custom title and labels
+plot<-plot + labs(color = "Estimated by") + 
+  scale_color_manual(values = c("RMark" = "red", "Hand" = "blue"),
+                    labels = c("RMark" = "RMark", "Hand" = "marked"))
+plot + theme(plot.title = element_text(hjust = 0.5, vjust = 0.5))
+
+```
+#I choose to display the result with 95% confidence level
+```{r}
+
+```
+
+
+#B.ANALYSING THE HOME-RANGE
+
+# Create a contingency table (matrix) in R
+```{r}
+contingency_table <- matrix(c(
+  105, 55, 2, 1, 0, 2,
+  4, 3, 5, 1, 0, 0,
+  3, 0, 2, 2, 0, 0
+), nrow = 3, byrow = TRUE)  # Set the number of rows and arrange by row
+
+# Assign row and column names
+rownames(contingency_table) <- c("Area 1", "Area 2", "Area 3")
+colnames(contingency_table) <- c("Male - First", "Female - First", "Male - Second", "Female - Second", "Male - Third", "Female - Third")
+
+# Print the contingency table
+contingency_table
+```
+
+#Contingency Test
+```{r}
+# Perform a Chi-Square test
+result <- chisq.test(contingency_table)
+
+# Print the Chi-Square test result
+print(result)
+```
+
+#Analysing The Home Range
+```{r}
+# Read the data 
+hr <- read.csv("moth.hr.csv", header = TRUE)
+head(hr)
+```
+```{r}
+# Summary statistics
+summary(hr)
+
+# Create cross-tabulations to understand the counts
+table(hr$Sex, hr$Capture)
+table(hr$Recapture)
+
+```
+
+#Difference between movemon on Male vs Female
+```{r}
+# Perform a Chi-Square test of independence
+chi_square_result <- chisq.test(hr$Sex, hr$Recapture)
+
+# Print the test result
+print(chi_square_result)
+
+```
+#There is a significat differences between Male and Female Movement. Male more active
+
+#Different Movement on Area 1, Area 2, Area 3
+```{r}
+# Load the 'dplyr' package for data manipulation
+library(dplyr)
+
+# Group by 'Sex,' 'Capture,' and 'Recapture' and count the occurrences
+hr <- hr %>%
+  group_by(Sex, Capture, Recapture) %>%
+  mutate(Visit = n())
+
+# View the resulting dataset
+print(hr)
+
+```
+
+```{r}
+# Perform one-way ANOVA (Assume this data not normally distributed)
+anova_result <- aov(Visit ~ Recapture, data = hr)
+
+# Print the ANOVA result
+summary(anova_result)
+```
+```{r}
+# However, you can load it just to make sure it's available
+library(stats)
+
+hr <- hr %>%
+  group_by(Sex, Capture, Recapture) %>%
+  mutate(Visit = n())
+```
+#There are significant differences of MOvement in each Area where Moths are mostly move in Area 1
+
+```{r}
+# Perform pairwise t-tests with Bonferroni correction
+pairwise_t_test_result <- pairwise.t.test(hr$Visit, hr$Recapture, p.adjust.method = "holm")
+
+# View the pairwise comparison results
+print(pairwise_t_test_result)
+```
+# Load the 'dplyr' package
+library(dplyr)
+
+# Filter the data frame to select only male individuals and count them
+male_count <- df %>% filter(sex == "Male") %>% nrow()
+
+# Print the count of male individuals
+cat("Number of male individuals:", male_count, "\n")
+
