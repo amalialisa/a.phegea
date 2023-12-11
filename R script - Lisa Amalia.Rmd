@@ -1,0 +1,309 @@
+---
+title: "moth"
+author: "Lisa Amalia"
+date: "2023-10-26"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+##### 1. General Analysis ----------------------------------
+
+#Load library
+```{r}
+library(marked)
+library(ggplot2)
+```
+
+# Load data
+```{r}
+moth<-read.csv("moth.eps1.csv")
+moth <- read.csv("moth.eps1.csv", colClasses = c(ch = "character"))
+head(moth)
+```
+
+#Process data
+```{r}
+moth$sex <- as.factor(moth$sex)
+moth.js.proc <- process.data(moth, 
+                               model = "JS", 
+                               groups = "sex")
+```
+#Make design data from processed data
+```{r}
+moth.js.ddl <- make.design.data(moth.js.proc)
+```
+
+#Fit the data
+```{r}
+fit.js.moth.models <- function(){
+  Phi.dot <- list(formula=~1)
+  p.dot <- list(formula=~1)
+  p.time <- list(formula=~time)
+  p.sex <- list(formula=~sex)
+  pent.dot <- list(formula=~1)
+  pent.time <- list(formula=~time)
+  pent.sex <- list(formula=~sex)
+  N.dot <- list(formula=~1)
+  N.sex <- list(formula=~sex)
+  cml <- create.model.list(c("Phi","p", "pent", "N"))
+  results <- crm.wrapper(cml, data = moth.js.proc, ddl = moth.js.ddl,
+                         external = FALSE, accumulate = FALSE, hessian = TRUE)
+  
+  return(results)
+}
+```
+
+#Run the function
+```{r}
+moth.js.models <- fit.js.moth.models()
+moth.js.models
+moth.js.models[[1]] 
+```
+#The estimates above are not on probability scale (or in individuals for N)
+# (e.g. Phi, p on logit scale, pent on mlogit scale)
+#Look at the prediction for (real) values using top model
+```{r}
+moth.js.predicted <- predict(moth.js.models[[1]], ddl = moth.js.ddl, se = TRUE) # [[1]] just calls the model row according to the model table.
+moth.js.predicted #run better from the console
+```
+#The output shows that:
+#survival between capture events is 0.75, 
+#detection probability is 0.67, 
+#pent is 0.22 each capture event, and 
+#the number of unmarked individuals in the superpopulation is about 11 
+#(so the super population is ~11 + 128 marked individuals =~ 139). 
+
+#counting the estimated population size
+#Abundance (N) is derived from the estimated parameters
+#We will estimate population size at each time by making a dataframe of estimates and calculating N
+#We will use the predicted estimates from the top-performing model (in this case: "moth.js.predicted")
+
+# NOTE: the below method will have to be adjusted based on your final model and the number of capture events
+```{r}
+N.derived <- data.frame(occ = c(1:4), #4 events
+                        Phi = c(rep(moth.js.predicted$Phi$estimate, 3), NA),   # 3 survival estimates all the same
+                        Nsuper = rep(moth.js.predicted$N$estimate + nrow(moth), 4), # Nsuper estimate + number of marked animals
+                        pent = c(1-sum(moth.js.predicted$pent$estimate), moth.js.predicted$pent$estimate)) # Sum of all pent must be 1
+```
+
+# Set-up empty vector for calculating N
+```{r}
+N.derived$N <- NA
+N.derived$N.lcl <- NA
+N.derived$N.ucl <- NA
+```
+
+# The inital population size (N[1]) = Nsuper * (1 - sum(all other pent estimates))
+# This is because of the link function for estimating pent.
+# The sum of all pent parameters MUST equal 1 (therefore, one less must be estimated)
+```{r}
+N.derived$N[1] <- (N.derived$Nsuper[1] * N.derived$pent[1])
+# Adding SE / confidence intervals around population size estimates
+N.derived$N.ucl[1] <- (moth.js.predicted$N$ucl + nrow(moth))*(1-sum(moth.js.predicted$pent$lcl))
+N.derived$N.lcl[1] <- (moth.js.predicted$N$lcl + nrow(moth))*(1-sum(moth.js.predicted$pent$ucl))
+```
+
+# Subsequent population sizes are estimated by calculating surviving individuals (N[t-1] * Phi[t]), and
+# Adding new births (Nsuper * pent[t])
+```{r}
+for(i in 2:nrow(N.derived)){
+  N.derived$N[i] <- (N.derived$N[i-1]*N.derived$Phi[i-1]) + (N.derived$Nsuper[i] * N.derived$pent[i])
+  N.derived$N.ucl[i] <- (N.derived$N.ucl[i-1]*moth.js.predicted$Phi$ucl[1]) + (((moth.js.predicted$N$ucl + nrow(moth))) *moth.js.predicted$pent$ucl[i-1])
+  N.derived$N.lcl[i] <- (N.derived$N.lcl[i-1]*moth.js.predicted$Phi$lcl[1]) + (((moth.js.predicted$N$lcl + nrow(moth))) *moth.js.predicted$pent$lcl[i-1])
+}
+```
+
+# The final result
+```{r}
+N.derived
+```
+
+#Plot the estimated poppulation size
+```{r}
+ggplot(N.derived, aes(x = occ, y = N)) +
+  geom_point(shape = 16, size = 3, col = "black") +
+  geom_errorbar(aes(ymin = N.lcl, ymax = N.ucl), width = 0.3) +
+  geom_path() +
+  labs(x = "Day", y = "Estimated population size(overall)\n(and 95% confidence interval)") +
+  theme_grey()
+```
+
+##### 2. Analysis for Female ----------------------------------
+
+```{r}
+moth_female <- subset(moth, sex == "Female")
+mothfemale.js.proc <- process.data(moth_female, model = "JS")
+mothfemale.js.ddl <- make.design.data(mothfemale.js.proc)
+fit.js.mothfemale.models <- function(){
+  Phi.dot <- list(formula=~1)
+  p.dot <- list(formula=~1)
+  p.time <- list(formula=~time)
+  pent.dot <- list(formula=~1)
+  pent.time <- list(formula=~time)
+  N.dot <- list(formula=~1)
+  cml <- create.model.list(c("Phi","p", "pent", "N"))
+  results <- crm.wrapper(cml, data = mothfemale.js.proc, ddl = mothfemale.js.ddl,
+                         external = FALSE, accumulate = FALSE, hessian = TRUE)
+  return(results)
+}
+mothfemale.js.models <- fit.js.mothfemale.models()
+mothfemale.js.predicted <- predict(mothfemale.js.models[[1]], ddl = mothfemale.js.ddl, se = TRUE)
+```
+
+```{r}
+N.derived <- data.frame(occ = c(1:4), #4 events
+                        Phi = c(rep(mothfemale.js.predicted$Phi$estimate, 3), NA),   # 3 survival estimates all the same
+                        Nsuper = rep(mothfemale.js.predicted$N$estimate + nrow(moth), 4), # Nsuper estimate + number of marked animals
+                        pent = c(1-sum(mothfemale.js.predicted$pent$estimate), mothfemale.js.predicted$pent$estimate)) # Sum of all pent must be 1
+```
+
+# Set-up empty vector for calculating N
+```{r}
+N.derived$N <- NA
+N.derived$N.lcl <- NA
+N.derived$N.ucl <- NA
+```
+
+# The inital population size (N[1]) = Nsuper * (1 - sum(all other pent estimates))
+# This is because of the link function for estimating pent.
+# The sum of all pent parameters MUST equal 1 (therefore, one less must be estimated)
+```{r}
+N.derived$N[1] <- (N.derived$Nsuper[1] * N.derived$pent[1])
+# Adding SE / confidence intervals around population size estimates
+N.derived$N.ucl[1] <- (mothfemale.js.predicted$N$ucl + nrow(moth))*(1-sum(mothfemale.js.predicted$pent$lcl))
+N.derived$N.lcl[1] <- (mothfemale.js.predicted$N$lcl + nrow(moth))*(1-sum(mothfemale.js.predicted$pent$ucl))
+```
+
+# Subsequent population sizes are estimated by calculating surviving individuals (N[t-1] * Phi[t]), and
+# Adding new births (Nsuper * pent[t])
+```{r}
+for(i in 2:nrow(N.derived)){
+  N.derived$N[i] <- (N.derived$N[i-1]*N.derived$Phi[i-1]) + (N.derived$Nsuper[i] * N.derived$pent[i])
+  N.derived$N.ucl[i] <- (N.derived$N.ucl[i-1]*mothfemale.js.predicted$Phi$ucl[1]) + (((mothfemale.js.predicted$N$ucl + nrow(moth))) *mothfemale.js.predicted$pent$ucl[i-1])
+  N.derived$N.lcl[i] <- (N.derived$N.lcl[i-1]*mothfemale.js.predicted$Phi$lcl[1]) + (((mothfemale.js.predicted$N$lcl + nrow(moth))) *mothfemale.js.predicted$pent$lcl[i-1])
+}
+```
+
+# The final result
+```{r}
+N.derived
+```
+#Plot the estimated poppulation size
+```{r}
+ggplot(N.derived, aes(x = occ, y = N)) +
+  geom_point(shape = 16, size = 3, col = "black") +
+  geom_errorbar(aes(ymin = N.lcl, ymax = N.ucl), width = 0.3) +
+  geom_path() +
+  labs(x = "Day", y = "Estimated population size for Female\n(and 95% confidence interval)") +
+  theme_grey()
+```
+
+##### 3. Analysis for Male ----------------------------------
+```{r}
+moth_male <- subset(moth, sex == "Male")
+mothmale.js.proc <- process.data(moth_male, model = "JS")
+mothmale.js.ddl <- make.design.data(mothmale.js.proc)
+fit.js.mothmale.models <- function(){
+  Phi.dot <- list(formula=~1)
+  p.dot <- list(formula=~1)
+  p.time <- list(formula=~time)
+  pent.dot <- list(formula=~1)
+  pent.time <- list(formula=~time)
+  N.dot <- list(formula=~1)
+  cml <- create.model.list(c("Phi","p", "pent", "N"))
+  results <- crm.wrapper(cml, data = mothmale.js.proc, ddl = mothmale.js.ddl,
+                         external = FALSE, accumulate = FALSE, hessian = TRUE)
+  return(results)
+}
+mothmale.js.models <- fit.js.mothmale.models()
+mothmale.js.predicted <- predict(mothmale.js.models[[1]], ddl = mothmale.js.ddl, se = TRUE)
+```
+
+```{r}
+N.derived <- data.frame(occ = c(1:4), #4 events
+                        Phi = c(rep(mothmale.js.predicted$Phi$estimate, 3), NA),   # 3 survival estimates all the same
+                        Nsuper = rep(mothmale.js.predicted$N$estimate + nrow(moth), 4), # Nsuper estimate + number of marked animals
+                        pent = c(1-sum(mothmale.js.predicted$pent$estimate), mothmale.js.predicted$pent$estimate)) # Sum of all pent must be 1
+```
+
+# Set-up empty vector for calculating N
+```{r}
+N.derived$N <- NA
+N.derived$N.lcl <- NA
+N.derived$N.ucl <- NA
+```
+
+# The inital population size (N[1]) = Nsuper * (1 - sum(all other pent estimates))
+# This is because of the link function for estimating pent.
+# The sum of all pent parameters MUST equal 1 (therefore, one less must be estimated)
+```{r}
+N.derived$N[1] <- (N.derived$Nsuper[1] * N.derived$pent[1])
+# Adding SE / confidence intervals around population size estimates
+N.derived$N.ucl[1] <- (mothmale.js.predicted$N$ucl + nrow(moth))*(1-sum(mothmale.js.predicted$pent$lcl))
+N.derived$N.lcl[1] <- (mothmale.js.predicted$N$lcl + nrow(moth))*(1-sum(mothmale.js.predicted$pent$ucl))
+```
+
+# Subsequent population sizes are estimated by calculating surviving individuals (N[t-1] * Phi[t]), and
+# Adding new births (Nsuper * pent[t])
+```{r}
+for(i in 2:nrow(N.derived)){
+  N.derived$N[i] <- (N.derived$N[i-1]*N.derived$Phi[i-1]) + (N.derived$Nsuper[i] * N.derived$pent[i])
+  N.derived$N.ucl[i] <- (N.derived$N.ucl[i-1]*mothmale.js.predicted$Phi$ucl[1]) + (((mothmale.js.predicted$N$ucl + nrow(moth))) *mothmale.js.predicted$pent$ucl[i-1])
+  N.derived$N.lcl[i] <- (N.derived$N.lcl[i-1]*mothmale.js.predicted$Phi$lcl[1]) + (((mothmale.js.predicted$N$lcl + nrow(moth))) *mothmale.js.predicted$pent$lcl[i-1])
+}
+```
+
+# The final result
+```{r}
+N.derived
+```
+#Plot the estimated poppulation size
+```{r}
+ggplot(N.derived, aes(x = occ, y = N)) +
+  geom_point(shape = 16, size = 3, col = "black") +
+  geom_errorbar(aes(ymin = N.lcl, ymax = N.ucl), width = 0.3) +
+  geom_path() +
+  labs(x = "Day", y = "Estimated population size for Male\n(and 95% confidence interval)") +
+  theme_grey()
+```
+
+##### 4. Analysis for Male ----------------------------------
+
+# Create a contingency table (matrix) in R
+```{r}
+contingency_table <- matrix(c(
+  105, 55, 2, 1, 0, 2,
+  4, 3, 5, 1, 0, 0,
+  3, 0, 2, 2, 0, 0
+), nrow = 3, byrow = TRUE)  # Set the number of rows and arrange by row
+
+# Assign row and column names
+rownames(contingency_table) <- c("Area 1", "Area 2", "Area 3")
+colnames(contingency_table) <- c("Male - First", "Female - First", "Male - Second", "Female - Second", "Male - Third", "Female - Third")
+
+# Print the contingency table
+contingency_table
+```
+
+#Contingency Test
+```{r}
+# Perform a Chi-Square test
+result <- chisq.test(contingency_table)
+
+# Print the Chi-Square test result
+print(result)
+```
+
+#Analysing The Home Range
+```{r}
+# Read the data 
+hr <- read.csv("moth.hr290ct.csv", header = TRUE)
+head(hr)
+```
+
+citation()
